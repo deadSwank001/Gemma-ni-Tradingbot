@@ -1,4 +1,5 @@
 """
+<img width="810" height="279" alt="image" src="https://github.com/user-attachments/assets/151f4a37-0587-4a04-9ec6-aa32ac337ced" />
 
 Solana + Gemma2 Trading Bot Architecture
 Goal Description
