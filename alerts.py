@@ -6,6 +6,7 @@ for all significant bot events (trade signals, risk blocks, errors).
 """
 
 import logging
+import logging.handlers
 import requests
 from datetime import datetime
 from config import DISCORD_WEBHOOK_URL, LOG_FILE_PATH
@@ -14,8 +15,10 @@ from config import DISCORD_WEBHOOK_URL, LOG_FILE_PATH
 _logger = logging.getLogger("tradingbot")
 _logger.setLevel(logging.DEBUG)
 
-# File handler – persists every message
-_fh = logging.FileHandler(LOG_FILE_PATH)
+# Rotating file handler – keeps up to 5 × 5 MB log files
+_fh = logging.handlers.RotatingFileHandler(
+    LOG_FILE_PATH, maxBytes=5 * 1024 * 1024, backupCount=5
+)
 _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter(
     "%(asctime)s [%(levelname)s] %(message)s",

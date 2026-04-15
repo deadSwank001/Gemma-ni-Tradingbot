@@ -57,10 +57,12 @@ def compute_autocorrelation(series: pd.Series, lags: list = None) -> dict:
     if lags is None:
         lags = [1, 6, 24]
     returns = series.pct_change().dropna()
-    return {
-        f"autocorr_lag_{lag}h": round(float(returns.autocorr(lag=lag)), 4)
-        for lag in lags
-    }
+    result = {}
+    for lag in lags:
+        raw = returns.autocorr(lag=lag)
+        # autocorr() returns NaN when variance is zero or data is insufficient
+        result[f"autocorr_lag_{lag}h"] = round(float(raw), 4) if not (raw != raw) else 0.0
+    return result
 
 # ── EMA extrapolation ─────────────────────────────────────────────────────────
 
@@ -75,7 +77,10 @@ def extrapolate_ema(series: pd.Series, forward_periods: int = 3) -> list:
     if len(recent) < 2:
         return []
     x = np.arange(len(recent))
-    coeffs = np.polyfit(x, recent, deg=1)  # [slope, intercept]
+    try:
+        coeffs = np.polyfit(x, recent, deg=1)  # [slope, intercept]
+    except (np.linalg.LinAlgError, ValueError):
+        return []
     future_x = np.arange(len(recent), len(recent) + forward_periods)
     return [round(float(np.polyval(coeffs, fx)), 6) for fx in future_x]
 
@@ -161,10 +166,21 @@ def get_market_context() -> str:
     if not metrics:
         return "Market data unavailable or insufficient data for analysis."
 
-    ema_9_fc  = ", ".join(f"{v:.4f}" for v in metrics["EMA_9_Forecast_3H"])
-    ema_21_fc = ", ".join(f"{v:.4f}" for v in metrics["EMA_21_Forecast_3H"])
+    return format_context(metrics)
 
-    context = (
+
+def format_context(metrics: dict) -> str:
+    """
+    Formats a metrics dict (from perform_technical_analysis) into the standard
+    context string consumed by the LLM prompt.
+
+    Extracted as a shared helper so the backtester and live cycle produce
+    identical prompt text.
+    """
+    ema_9_fc  = ", ".join(f"{v:.4f}" for v in metrics.get("EMA_9_Forecast_3H", []))
+    ema_21_fc = ", ".join(f"{v:.4f}" for v in metrics.get("EMA_21_Forecast_3H", []))
+
+    return (
         f"Current Price: {metrics['price']:.4f}\n"
         f"RSI (14): {metrics['RSI']:.2f} [{metrics['RSI_Signal']}]\n"
         f"9-EMA:  {metrics['EMA_9']:.4f}  → Forecast (next 3H): {ema_9_fc}\n"
@@ -176,4 +192,3 @@ def get_market_context() -> str:
         f"6H: {metrics['Autocorr_Lag_6h']:.4f} | "
         f"24H: {metrics['Autocorr_Lag_24h']:.4f}\n"
     )
-    return context

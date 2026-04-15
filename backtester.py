@@ -19,7 +19,7 @@ Usage:
 
 import time
 import pandas as pd
-from ta_engine import fetch_historical_ohlcv, perform_technical_analysis
+from ta_engine import fetch_historical_ohlcv, perform_technical_analysis, format_context
 from position_sizer import calculate_position_size
 from config import TARGET_TOKEN, BACKTEST_DAYS, BACKTEST_INITIAL_BALANCE_SOL
 
@@ -89,20 +89,7 @@ def run_backtest(use_llm: bool = False) -> dict:
         # ── Signal ────────────────────────────────────────────────────────────
         if use_llm:
             from llm_engine import query_gemma
-            ema_9_fc  = ", ".join(f"{v:.4f}" for v in metrics["EMA_9_Forecast_3H"])
-            ema_21_fc = ", ".join(f"{v:.4f}" for v in metrics["EMA_21_Forecast_3H"])
-            context = (
-                f"Current Price: {metrics['price']:.4f}\n"
-                f"RSI (14): {metrics['RSI']:.2f} [{metrics['RSI_Signal']}]\n"
-                f"9-EMA:  {metrics['EMA_9']:.4f}  → Forecast (next 3H): {ema_9_fc}\n"
-                f"21-EMA: {metrics['EMA_21']:.4f} → Forecast (next 3H): {ema_21_fc}\n"
-                f"50-EMA: {metrics['EMA_50']:.4f}\n"
-                f"EMA Crossover: {metrics['EMA_Crossover']}\n"
-                f"Volume Change (1H): {metrics['Volume_Change_Pct']:.2f}%\n"
-                f"Autocorrelation — 1H: {metrics['Autocorr_Lag_1h']:.4f} | "
-                f"6H: {metrics['Autocorr_Lag_6h']:.4f} | "
-                f"24H: {metrics['Autocorr_Lag_24h']:.4f}\n"
-            )
+            context    = format_context(metrics)
             decision   = query_gemma(context)
             action     = decision.get("action", "HOLD").upper()
             confidence = decision.get("confidence", 0)

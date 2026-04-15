@@ -44,7 +44,13 @@ class RiskManager:
                     self.date           = today
                     return
             except (json.JSONDecodeError, KeyError):
-                pass  # corrupt file – reset state
+                import warnings
+                warnings.warn(
+                    f"[RiskManager] Risk state file '{self._state_file}' is "
+                    "corrupted or unreadable – resetting state for today.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         # New day or first run
         self.daily_pnl       = 0.0
