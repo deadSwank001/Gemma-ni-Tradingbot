@@ -13,7 +13,8 @@ Our system will be composed of several key modules:
 Data Source: We'll use a reliable Solana RPC provider (like Helius or QuickNode) paired with a market data API (e.g., Birdeye, Jupiter Price API, or DexScreener)
 to fetch real-time price and volume data for target Solana tokens.
 
-Indicators: We will compute hourly RSI, EMA, and Volume metrics using a library like pandas-ta or ta.
+Indicators: We will compute hourly RSI, EMA (9/21/50), Volume, autocorrelation of returns,
+and linear-regression EMA forecasts using pandas-ta and numpy.
 Scheduler: A robust scheduler (e.g., APScheduler or native cron) to run the data fetching and analysis strictly between 4 AM and 11 AM local time.
 
 2. LLM Reasoning Engine (Gemma 2)
@@ -29,6 +30,12 @@ For a dummy setup, we will use a Solana Devnet Keypair.
 Execution: We will use the solders and solana-py libraries to construct, sign, and broadcast swap transactions. For optimal routing on Solana, we'll integrate the Jupiter Aggregator API to ensure the best swap rates.
 [Sniper vs. Swing: A "sniper" bot requires ultra-low latency and raw RPC mempool subscriptions.]** Since we are checking hourly (swing/day trading), the architecture can be a bit more relaxed,
 allowing the LLM time to process the TA without missing millisecond-level block inclusions.
+
+4. Alerts & Logging       – structured file log + Discord webhook (alerts.py)
+5. Position Sizer         – risk-based sizing scaled by LLM confidence (position_sizer.py)
+6. Risk Manager           – daily loss cap + drawdown guard with persisted state (risk_manager.py)
+7. Backtester             – walk-forward replay on historical OHLCV (backtester.py)
+
 Verification Plan
 
 Backtesting: Run the TA Engine and LLM prompts on historical data to see how gemma2 evaluates past setups.
@@ -47,38 +54,66 @@ from config import TRADING_HOURS_START, TRADING_HOURS_END
 from ta_engine import get_market_context
 from llm_engine import query_gemma
 from execution import execute_trade
+from alerts import log_info, log_error, notify_trade, notify_risk_block
+from position_sizer import calculate_position_size
+from risk_manager import RiskManager
+
+# Instantiate the risk manager once at start-up so daily state persists
+# across trading cycles within the same process.
+_risk_manager = RiskManager()
 
 def run_trading_cycle():
     """
     Main sequence for a single trading cycle.
-    1. Fetch TA Context
-    2. Query LLM
-    3. Execute Trade
+    1. Check risk limits
+    2. Fetch TA Context
+    3. Query LLM
+    4. Size position
+    5. Execute Trade
+    6. Alert
     """
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] --- Starting Trading Cycle ---")
-    
+    log_info(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] --- Starting Trading Cycle ---")
+    log_info(f"[Main] Risk state: {_risk_manager.summary()}")
+
+    # 0. Risk gate – bail early if limits are already breached
+    allowed, reason = _risk_manager.is_trade_allowed()
+    if not allowed:
+        notify_risk_block(reason)
+        return
+
     # 1. Market Data & TA
     context = get_market_context()
-    print("[Main] Market Context generated:")
-    print(context)
+    log_info("[Main] Market Context generated:")
+    log_info(context)
     
     # 2. Reasoning Engine
-    print("[Main] Querying local Gemma2 LLM via Ollama...")
+    log_info("[Main] Querying local Gemma2 LLM via Ollama...")
     decision = query_gemma(context)
-    print(f"[Main] LLM Decision: {decision}")
+    log_info(f"[Main] LLM Decision: {decision}")
     
     # Extract decision properties
-    action = decision.get("action", "HOLD").upper()
+    action     = decision.get("action", "HOLD").upper()
     confidence = decision.get("confidence", 0)
-    
+    reasoning  = decision.get("reasoning", "")
+
     # Basic safety check
     if confidence < 75 and action in ["BUY", "SELL"]:
-        print(f"[Main] Confidence ({confidence}%) too low. Forcing HOLD.")
+        log_info(f"[Main] Confidence ({confidence}%) too low. Forcing HOLD.")
         action = "HOLD"
-        
-    # 3. Execution Engine
-    execute_trade(action)
-    print("--- Trading Cycle Complete ---\n")
+
+    # 3. Position sizing (only meaningful for BUY/SELL)
+    stop_loss_pct = _risk_manager.get_stop_loss_pct()
+    amount_sol    = calculate_position_size(confidence, stop_loss_pct=stop_loss_pct)
+    log_info(f"[Main] Calculated position size: {amount_sol:.4f} SOL")
+
+    # 4. Execution Engine
+    execute_trade(action, amount_sol=amount_sol)
+
+    # 5. Alert
+    if action in ("BUY", "SELL"):
+        notify_trade(action, amount_sol, reasoning, confidence)
+
+    log_info("--- Trading Cycle Complete ---\n")
 
 def start_scheduler():
     """
@@ -95,13 +130,13 @@ def start_scheduler():
         minute=0
     )
     
-    print(f"Trading bot initialized. Scheduling active from {TRADING_HOURS_START}:00 to {TRADING_HOURS_END}:00 local time.")
-    print("Press Ctrl+C to exit.")
+    log_info(f"Trading bot initialized. Scheduling active from {TRADING_HOURS_START}:00 to {TRADING_HOURS_END}:00 local time.")
+    log_info("Press Ctrl+C to exit.")
     
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
-        print("\nShutdown signal received. Exiting.")
+        log_info("\nShutdown signal received. Exiting.")
 
 if __name__ == "__main__":
     start_scheduler()
@@ -110,4 +145,6 @@ if __name__ == "__main__":
     # uncomment the line below to run one cycle instantly:
     # run_trading_cycle()
 
-
+    # To run a quick rule-based backtest on start-up, uncomment:
+    # from backtester import run_backtest
+    # run_backtest(use_llm=False)

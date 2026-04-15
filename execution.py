@@ -9,16 +9,20 @@ def get_devnet_client() -> Client:
 def get_keypair() -> Keypair:
     return Keypair.from_bytes(base58.b58decode(PRIVATE_KEY))
 
-def execute_trade(action: str):
+def execute_trade(action: str, amount_sol: float = TRADE_AMOUNT_SOL):
     """
     Simulates or executes a trade on Solana Devnet.
     In a real app, this would use the Jupiter API to construct a swap transaction, and sign/send via Solanapy.
+
+    Args:
+        action:     "BUY", "SELL", or "HOLD".
+        amount_sol: Position size in SOL as calculated by the position sizer.
     """
     if action == "HOLD":
         print("[Execution Engine] Action is HOLD. No trade executed.")
         return
 
-    print(f"[Execution Engine] Initiating {action} for {TRADE_AMOUNT_SOL} SOL equivalent...")
+    print(f"[Execution Engine] Initiating {action} for {amount_sol:.4f} SOL equivalent...")
     
     # Example logic mapping:
     # If BUY: Swap SOL -> TARGET_TOKEN

@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import pandas_ta as ta
+import numpy as np
 import time
 from config import TARGET_TOKEN, BIRDEYE_API_KEY
 
@@ -37,40 +38,123 @@ def fetch_historical_ohlcv(token_address: str, time_from: int, time_to: int, typ
     df.set_index("timestamp", inplace=True)
     return df
 
+# ── Auto-correlation ──────────────────────────────────────────────────────────
+
+def compute_autocorrelation(series: pd.Series, lags: list = None) -> dict:
+    """
+    Computes autocorrelation of 1-period price returns at each lag.
+
+    Positive autocorr  → momentum (trend continuation is likely).
+    Negative autocorr  → mean-reversion (price likely to reverse).
+
+    Args:
+        series: Close price series.
+        lags:   List of integer lags in hours. Defaults to [1, 6, 24].
+
+    Returns:
+        Dict mapping 'autocorr_lag_Nh' keys to rounded float values.
+    """
+    if lags is None:
+        lags = [1, 6, 24]
+    returns = series.pct_change().dropna()
+    result = {}
+    for lag in lags:
+        raw = returns.autocorr(lag=lag)
+        # autocorr() returns NaN when variance is zero or data is insufficient
+        result[f"autocorr_lag_{lag}h"] = round(float(raw), 4) if not (raw != raw) else 0.0
+    return result
+
+# ── EMA extrapolation ─────────────────────────────────────────────────────────
+
+def extrapolate_ema(series: pd.Series, forward_periods: int = 3) -> list:
+    """
+    Projects an EMA series forward by fitting a linear regression to the last
+    20 (non-NaN) values and extrapolating *forward_periods* steps.
+
+    Returns a list of forecasted float values (same price units as input).
+    """
+    recent = series.dropna().tail(20).values
+    if len(recent) < 2:
+        return []
+    x = np.arange(len(recent))
+    try:
+        coeffs = np.polyfit(x, recent, deg=1)  # [slope, intercept]
+    except (np.linalg.LinAlgError, ValueError):
+        return []
+    future_x = np.arange(len(recent), len(recent) + forward_periods)
+    return [round(float(np.polyval(coeffs, fx)), 6) for fx in future_x]
+
+# ── Core TA ───────────────────────────────────────────────────────────────────
+
 def perform_technical_analysis(df: pd.DataFrame) -> dict:
     """
-    Computes RSI, EMA, and Volume metrics using pandas-ta.
+    Computes RSI, multi-period EMAs, volume metrics, auto-correlation of returns,
+    and linear-regression EMA forecasts.
+
+    Returns a dict of scalar and list metrics; empty dict on insufficient data.
     """
     if df.empty or len(df) < 50:
         return {}
 
-    # Calculate RSI
+    # ── Indicators ────────────────────────────────────────────────────────────
     df["RSI"] = ta.rsi(df["close"], length=14)
-    # Calculate EMA 9 and 21
-    df["EMA_9"] = ta.ema(df["close"], length=9)
+    df["EMA_9"]  = ta.ema(df["close"], length=9)
     df["EMA_21"] = ta.ema(df["close"], length=21)
-    # Calculate Volume Change
+    df["EMA_50"] = ta.ema(df["close"], length=50)
     df["Volume_Change"] = df["volume"].pct_change() * 100
 
     latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    prev   = df.iloc[-2]
 
-    # Check for EMA crossover
-    crossover = "Bullish Cross" if (prev["EMA_9"] <= prev["EMA_21"] and latest["EMA_9"] > latest["EMA_21"]) else \
-                "Bearish Cross" if (prev["EMA_9"] >= prev["EMA_21"] and latest["EMA_9"] < latest["EMA_21"]) else "None"
+    # ── EMA crossover signal ──────────────────────────────────────────────────
+    if   prev["EMA_9"] <= prev["EMA_21"] and latest["EMA_9"] > latest["EMA_21"]:
+        crossover = "Bullish Cross"
+    elif prev["EMA_9"] >= prev["EMA_21"] and latest["EMA_9"] < latest["EMA_21"]:
+        crossover = "Bearish Cross"
+    else:
+        crossover = "None"
+
+    # ── RSI condition label ───────────────────────────────────────────────────
+    rsi_val = latest["RSI"]
+    if   rsi_val >= 70:
+        rsi_signal = "Overbought"
+    elif rsi_val <= 30:
+        rsi_signal = "Oversold"
+    else:
+        rsi_signal = "Neutral"
+
+    # ── Auto-correlation of returns ───────────────────────────────────────────
+    autocorr = compute_autocorrelation(df["close"])
+
+    # ── EMA linear-regression forecasts (next 3 hours) ───────────────────────
+    ema_9_forecast  = extrapolate_ema(df["EMA_9"],  forward_periods=3)
+    ema_21_forecast = extrapolate_ema(df["EMA_21"], forward_periods=3)
 
     return {
-        "price": latest["close"],
-        "RSI": latest["RSI"],
-        "EMA_9": latest["EMA_9"],
-        "EMA_21": latest["EMA_21"],
-        "EMA_Crossover": crossover,
-        "Volume_Change_Pct": latest["Volume_Change"]
+        "price":              latest["close"],
+        # RSI
+        "RSI":                latest["RSI"],
+        "RSI_Signal":         rsi_signal,
+        # EMAs
+        "EMA_9":              latest["EMA_9"],
+        "EMA_21":             latest["EMA_21"],
+        "EMA_50":             latest["EMA_50"],
+        "EMA_Crossover":      crossover,
+        # EMA forecasts
+        "EMA_9_Forecast_3H":  ema_9_forecast,
+        "EMA_21_Forecast_3H": ema_21_forecast,
+        # Volume
+        "Volume_Change_Pct":  latest["Volume_Change"],
+        # Auto-correlation
+        "Autocorr_Lag_1h":    autocorr.get("autocorr_lag_1h", 0.0),
+        "Autocorr_Lag_6h":    autocorr.get("autocorr_lag_6h", 0.0),
+        "Autocorr_Lag_24h":   autocorr.get("autocorr_lag_24h", 0.0),
     }
 
 def get_market_context() -> str:
     """
-    Fetches data and returns a formatted string with the latest TA metrics.
+    Fetches OHLCV data and returns a formatted string with all TA metrics
+    (including autocorrelation and EMA forecasts) for the LLM prompt.
     """
     now = int(time.time())
     # Fetch last 3 days of hourly data to have enough for EMA/RSI calculations
@@ -82,12 +166,29 @@ def get_market_context() -> str:
     if not metrics:
         return "Market data unavailable or insufficient data for analysis."
 
-    context = (
+    return format_context(metrics)
+
+
+def format_context(metrics: dict) -> str:
+    """
+    Formats a metrics dict (from perform_technical_analysis) into the standard
+    context string consumed by the LLM prompt.
+
+    Extracted as a shared helper so the backtester and live cycle produce
+    identical prompt text.
+    """
+    ema_9_fc  = ", ".join(f"{v:.4f}" for v in metrics.get("EMA_9_Forecast_3H", []))
+    ema_21_fc = ", ".join(f"{v:.4f}" for v in metrics.get("EMA_21_Forecast_3H", []))
+
+    return (
         f"Current Price: {metrics['price']:.4f}\n"
-        f"RSI (14): {metrics['RSI']:.2f}\n"
-        f"9-EMA: {metrics['EMA_9']:.4f}\n"
-        f"21-EMA: {metrics['EMA_21']:.4f}\n"
+        f"RSI (14): {metrics['RSI']:.2f} [{metrics['RSI_Signal']}]\n"
+        f"9-EMA:  {metrics['EMA_9']:.4f}  → Forecast (next 3H): {ema_9_fc}\n"
+        f"21-EMA: {metrics['EMA_21']:.4f} → Forecast (next 3H): {ema_21_fc}\n"
+        f"50-EMA: {metrics['EMA_50']:.4f}\n"
         f"EMA Crossover: {metrics['EMA_Crossover']}\n"
         f"Volume Change (1H): {metrics['Volume_Change_Pct']:.2f}%\n"
+        f"Autocorrelation — 1H: {metrics['Autocorr_Lag_1h']:.4f} | "
+        f"6H: {metrics['Autocorr_Lag_6h']:.4f} | "
+        f"24H: {metrics['Autocorr_Lag_24h']:.4f}\n"
     )
-    return context
