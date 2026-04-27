@@ -50,3 +50,13 @@ LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "tradingbot.log")
 BACKTEST_DAYS = int(os.getenv("BACKTEST_DAYS", "30"))
 # Simulated starting balance for backtests (SOL)
 BACKTEST_INITIAL_BALANCE_SOL = float(os.getenv("BACKTEST_INITIAL_BALANCE_SOL", "10.0"))
+
+# ── Sentiment Engine ──────────────────────────────────────────────────────────
+# Base URL for the CoinGecko public API (no key required)
+SENTIMENT_API_BASE_URL = os.getenv("SENTIMENT_API_BASE_URL", "https://api.coingecko.com/api/v3")
+# CoinGecko coin ID for the target token (default: solana)
+SENTIMENT_COIN_ID = os.getenv("SENTIMENT_COIN_ID", "solana")
+
+# ── Trade Journal ─────────────────────────────────────────────────────────────
+# JSON file that stores the persistent trade log
+TRADE_JOURNAL_FILE = os.getenv("TRADE_JOURNAL_FILE", "trade_journal.json")
