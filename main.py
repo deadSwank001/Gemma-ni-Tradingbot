@@ -35,6 +35,8 @@ allowing the LLM time to process the TA without missing millisecond-level block 
 5. Position Sizer         – risk-based sizing scaled by LLM confidence (position_sizer.py)
 6. Risk Manager           – daily loss cap + drawdown guard with persisted state (risk_manager.py)
 7. Backtester             – walk-forward replay on historical OHLCV (backtester.py)
+8. Sentiment Engine       – social/community sentiment score appended to LLM context (sentiment_engine.py)
+9. Trade Journal          – append-only trade log with live performance stats (trade_journal.py)
 
 Verification Plan
 
@@ -51,26 +53,33 @@ from datetime import datetime
 import time
 
 from config import TRADING_HOURS_START, TRADING_HOURS_END
-from ta_engine import get_market_context
+from ta_engine import get_market_context, get_last_price
 from llm_engine import query_gemma
 from execution import execute_trade
 from alerts import log_info, log_error, notify_trade, notify_risk_block
 from position_sizer import calculate_position_size
 from risk_manager import RiskManager
+from sentiment_engine import get_sentiment_context
+from trade_journal import TradeJournal
 
 # Instantiate the risk manager once at start-up so daily state persists
 # across trading cycles within the same process.
 _risk_manager = RiskManager()
+
+# Instantiate the trade journal once so all cycles share the same log.
+_trade_journal = TradeJournal()
 
 def run_trading_cycle():
     """
     Main sequence for a single trading cycle.
     1. Check risk limits
     2. Fetch TA Context
+    2b. Fetch Sentiment Context
     3. Query LLM
     4. Size position
     5. Execute Trade
-    6. Alert
+    6. Record in Trade Journal
+    7. Alert
     """
     log_info(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] --- Starting Trading Cycle ---")
     log_info(f"[Main] Risk state: {_risk_manager.summary()}")
@@ -85,7 +94,12 @@ def run_trading_cycle():
     context = get_market_context()
     log_info("[Main] Market Context generated:")
     log_info(context)
-    
+
+    # 1b. Sentiment layer – append social sentiment to the LLM context
+    sentiment = get_sentiment_context()
+    log_info(f"[Main] Sentiment: {sentiment}")
+    context = context + "\n" + sentiment
+
     # 2. Reasoning Engine
     log_info("[Main] Querying local Gemma2 LLM via Ollama...")
     decision = query_gemma(context)
@@ -109,7 +123,12 @@ def run_trading_cycle():
     # 4. Execution Engine
     execute_trade(action, amount_sol=amount_sol)
 
-    # 5. Alert
+    # 5. Trade Journal – record every non-HOLD trade
+    if action in ("BUY", "SELL"):
+        _trade_journal.record_trade(action, amount_sol, confidence, reasoning, get_last_price())
+        log_info(f"[Main] Journal updated: {_trade_journal.summary()}")
+
+    # 6. Alert
     if action in ("BUY", "SELL"):
         notify_trade(action, amount_sol, reasoning, confidence)
 

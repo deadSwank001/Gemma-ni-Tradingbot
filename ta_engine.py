@@ -166,7 +166,22 @@ def get_market_context() -> str:
     if not metrics:
         return "Market data unavailable or insufficient data for analysis."
 
+    # Cache last known price for other modules to consume without a second fetch
+    _cache["last_price"] = metrics.get("price", 0.0)
+
     return format_context(metrics)
+
+
+# Module-level price cache populated by get_market_context()
+_cache: dict = {}
+
+
+def get_last_price() -> float:
+    """
+    Return the most recently fetched asset price (set by ``get_market_context``).
+    Returns 0.0 if no price has been fetched yet this session.
+    """
+    return _cache.get("last_price", 0.0)
 
 
 def format_context(metrics: dict) -> str:
